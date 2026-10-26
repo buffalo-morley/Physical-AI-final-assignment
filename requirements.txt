@@ -1,0 +1,5 @@
+# Install torch first with the appropriate CUDA wheel for your GPU, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.8.0
+genesis-world==1.4.5
+boto3>=1.40
