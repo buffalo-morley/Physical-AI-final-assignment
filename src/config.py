@@ -4,11 +4,20 @@
 BEDROCK_REGION = "us-east-1"
 BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-5-5"
 
+# Cubes and zones intentionally use two disjoint color vocabularies (instead of both being
+# red/green/blue) so that a cube never "should" visually match its target zone by color --
+# avoiding the false expectation that e.g. a red cube belongs on a red zone.
+CUBE_COLORS = ["red", "green", "blue"]
+ZONE_COLORS = ["yellow", "purple", "orange"]
+
 # --- Colors (RGBA, 0-1) ---
 COLORS = {
     "red": (0.85, 0.15, 0.15, 1.0),
     "green": (0.15, 0.75, 0.25, 1.0),
     "blue": (0.15, 0.35, 0.9, 1.0),
+    "yellow": (0.9, 0.8, 0.1, 1.0),
+    "purple": (0.55, 0.15, 0.75, 1.0),
+    "orange": (0.95, 0.5, 0.1, 1.0),
 }
 
 # --- Cube layout (near row, within easy reach of the Franka base at origin) ---
@@ -22,16 +31,17 @@ CUBE_START_POS = {
 # --- Target zone layout (far row, flat colored pads) ---
 ZONE_SIZE = (0.12, 0.12, 0.01)
 ZONE_POS = {
-    "red": (0.55, -0.2, ZONE_SIZE[2] / 2),
-    "green": (0.55, 0.0, ZONE_SIZE[2] / 2),
-    "blue": (0.55, 0.2, ZONE_SIZE[2] / 2),
+    "yellow": (0.55, -0.2, ZONE_SIZE[2] / 2),
+    "purple": (0.55, 0.0, ZONE_SIZE[2] / 2),
+    "orange": (0.55, 0.2, ZONE_SIZE[2] / 2),
 }
 
 # --- Scene layout description, used to let the LLM resolve spatial references like
-# "一番右のブロック" (the rightmost block) in addition to direct color names. ---
+# "the rightmost block" in addition to direct color names. ---
 LAYOUT_HINT = (
-    "ブロックは手前の列に並んでおり、カメラから見て左から右の順に red, green, blue です。"
-    "エリア（置き場）は奥の列に並んでおり、同じく左から右の順に red, green, blue です。"
+    "The cubes are in the near row; from the camera's left to right they are: "
+    "red, green, blue. The target zones are in the far row; from left to right they are: "
+    "yellow, purple, orange."
 )
 
 # --- Motion parameters ---

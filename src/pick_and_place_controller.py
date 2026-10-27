@@ -1,5 +1,11 @@
 """Low-level Franka Panda motion primitives: smooth IK-based moves, gripper control, and a
-physically-simulated pick-and-place routine (grasp via finger friction, not teleportation)."""
+physically-simulated pick-and-place routine (grasp via finger friction, not teleportation).
+
+Every motion primitive accepts an optional `on_step(action_vector)` callback, invoked once per
+simulation step with the 9-dim joint target that was just commanded. This is used by
+`collect_demos.py` to record (image, proprioception, action) tuples from this scripted
+"expert" controller, which are then used to train the ACT imitation-learning policy.
+"""
 
 import numpy as np
 
@@ -34,10 +40,18 @@ GRASP_Z_OFFSET = 0.103
 
 
 def init_robot(franka):
-    """Set PD gains and bring the arm to a neutral ready pose."""
+    """Set PD gains and bring the arm to a neutral ready pose.
+
+    `set_dofs_position` only teleports the kinematic state; it does not touch the PD
+    controller's target. Without also setting that target to the same pose, the very next
+    `scene.step()` would have the (huge) arm gains pulling against whatever stale/default
+    target was there before, snapping the arm violently before any real motion command is
+    ever issued.
+    """
     franka.set_dofs_kp(KP, dofs_idx_local=ALL_DOFS)
     franka.set_dofs_kv(KV, dofs_idx_local=ALL_DOFS)
     franka.set_dofs_position(READY_QPOS, dofs_idx_local=ALL_DOFS)
+    franka.control_dofs_position(READY_QPOS, dofs_idx_local=ALL_DOFS)
 
 
 def _current_arm_qpos(franka):
@@ -48,7 +62,7 @@ def _current_gripper_width(franka):
     return float(franka.get_dofs_position(dofs_idx_local=FINGER_DOFS).cpu().numpy().mean())
 
 
-def _interp_run(franka, scene, arm_target, gripper_target, steps):
+def _interp_run(franka, scene, arm_target, gripper_target, steps, on_step=None):
     arm_start = _current_arm_qpos(franka)
     grip_start = _current_gripper_width(franka)
     for i in range(1, steps + 1):
@@ -58,13 +72,17 @@ def _interp_run(franka, scene, arm_target, gripper_target, steps):
         full = np.concatenate([arm_q, [grip_q, grip_q]])
         franka.control_dofs_position(full, dofs_idx_local=ALL_DOFS)
         scene.step()
+        if on_step is not None:
+            on_step(full)
 
 
-def _hold(franka, scene, arm_target, gripper_target, steps):
+def _hold(franka, scene, arm_target, gripper_target, steps, on_step=None):
     full = np.concatenate([arm_target, [gripper_target, gripper_target]])
     for _ in range(steps):
         franka.control_dofs_position(full, dofs_idx_local=ALL_DOFS)
         scene.step()
+        if on_step is not None:
+            on_step(full)
 
 
 def move_to(
@@ -76,6 +94,7 @@ def move_to(
     move_steps=MOVE_STEPS,
     settle_steps=SETTLE_STEPS,
     cartesian_waypoints=8,
+    on_step=None,
 ):
     """Move the end-effector to `pos`/`quat`.
 
@@ -104,32 +123,32 @@ def move_to(
             link=hand, pos=wp_pos, quat=quat, dofs_idx_local=ARM_DOFS, init_qpos=init_qpos
         )
         arm_target = qpos_full.cpu().numpy()[:7]
-        _interp_run(franka, scene, arm_target, wp_grip, steps_per_wp)
+        _interp_run(franka, scene, arm_target, wp_grip, steps_per_wp, on_step=on_step)
 
     if settle_steps:
-        _hold(franka, scene, arm_target, gripper, settle_steps)
+        _hold(franka, scene, arm_target, gripper, settle_steps, on_step=on_step)
 
 
-def set_gripper(franka, scene, width, steps=GRASP_STEPS):
+def set_gripper(franka, scene, width, steps=GRASP_STEPS, on_step=None):
     """Open/close the gripper in place without moving the arm."""
     arm_target = _current_arm_qpos(franka)
-    _interp_run(franka, scene, arm_target, width, steps)
-    _hold(franka, scene, arm_target, width, 10)
+    _interp_run(franka, scene, arm_target, width, steps, on_step=on_step)
+    _hold(franka, scene, arm_target, width, 10, on_step=on_step)
 
 
-def pick(franka, scene, cube_pos, approach_height=0.18):
+def pick(franka, scene, cube_pos, approach_height=0.18, on_step=None):
     """Grasp the object located at `cube_pos` (physics-based grip via finger friction)."""
     x, y, z = float(cube_pos[0]), float(cube_pos[1]), float(cube_pos[2])
     grasp_pos = (x, y, z + GRASP_Z_OFFSET)
     approach_pos = (x, y, z + GRASP_Z_OFFSET + approach_height)
 
-    move_to(franka, scene, approach_pos, gripper=GRIPPER_OPEN)
-    move_to(franka, scene, grasp_pos, gripper=GRIPPER_OPEN, move_steps=APPROACH_STEPS)
-    set_gripper(franka, scene, GRIPPER_CLOSE)
-    move_to(franka, scene, approach_pos, gripper=GRIPPER_CLOSE, move_steps=APPROACH_STEPS)
+    move_to(franka, scene, approach_pos, gripper=GRIPPER_OPEN, on_step=on_step)
+    move_to(franka, scene, grasp_pos, gripper=GRIPPER_OPEN, move_steps=APPROACH_STEPS, on_step=on_step)
+    set_gripper(franka, scene, GRIPPER_CLOSE, on_step=on_step)
+    move_to(franka, scene, approach_pos, gripper=GRIPPER_CLOSE, move_steps=APPROACH_STEPS, on_step=on_step)
 
 
-def place(franka, scene, target_pos, approach_height=0.18, surface_half_height=ZONE_HALF):
+def place(franka, scene, target_pos, approach_height=0.18, surface_half_height=ZONE_HALF, on_step=None):
     """Lower the currently-held object onto a surface at `target_pos` and release it.
 
     `surface_half_height` is the half-thickness of whatever the object will rest on:
@@ -140,11 +159,11 @@ def place(franka, scene, target_pos, approach_height=0.18, surface_half_height=Z
     drop_pos = (x, y, final_cube_z + GRASP_Z_OFFSET)
     approach_pos = (x, y, final_cube_z + GRASP_Z_OFFSET + approach_height)
 
-    move_to(franka, scene, approach_pos, gripper=GRIPPER_CLOSE)
-    move_to(franka, scene, drop_pos, gripper=GRIPPER_CLOSE, move_steps=APPROACH_STEPS)
-    set_gripper(franka, scene, GRIPPER_OPEN)
-    move_to(franka, scene, approach_pos, gripper=GRIPPER_OPEN, move_steps=APPROACH_STEPS)
+    move_to(franka, scene, approach_pos, gripper=GRIPPER_CLOSE, on_step=on_step)
+    move_to(franka, scene, drop_pos, gripper=GRIPPER_CLOSE, move_steps=APPROACH_STEPS, on_step=on_step)
+    set_gripper(franka, scene, GRIPPER_OPEN, on_step=on_step)
+    move_to(franka, scene, approach_pos, gripper=GRIPPER_OPEN, move_steps=APPROACH_STEPS, on_step=on_step)
 
 
-def go_ready(franka, scene, steps=MOVE_STEPS):
-    _interp_run(franka, scene, READY_QPOS[:7], GRIPPER_OPEN, steps)
+def go_ready(franka, scene, steps=MOVE_STEPS, on_step=None):
+    _interp_run(franka, scene, READY_QPOS[:7], GRIPPER_OPEN, steps, on_step=on_step)

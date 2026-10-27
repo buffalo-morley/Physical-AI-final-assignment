@@ -1,29 +1,32 @@
 """Parses a free-form natural language instruction into a structured pick-and-place action
 using Claude via AWS Bedrock. This is where the task's "AI" requirement is satisfied:
-the robot does not follow hardcoded commands, but interprets arbitrary Japanese/English
-sentences at inference time."""
+the robot does not follow hardcoded commands, but interprets arbitrary sentences at
+inference time."""
 
 import json
 
 import boto3
 
-from src.config import BEDROCK_MODEL_ID, BEDROCK_REGION, COLORS, LAYOUT_HINT
+from src.config import BEDROCK_MODEL_ID, BEDROCK_REGION, CUBE_COLORS, LAYOUT_HINT, ZONE_COLORS
 
-VALID_COLORS = list(COLORS.keys())
+SYSTEM_PROMPT = f"""You are the instruction parser for a pick-and-place robot.
 
-SYSTEM_PROMPT = f"""あなたはピック&プレース・ロボットのための指示解析器です。
-ユーザーの自然言語の指示を読み取り、「どの色のブロックを」「どの色のエリアに」置くかを
-抽出してください。色は必ず次のいずれかに正規化してください: {", ".join(VALID_COLORS)}。
+Read the user's natural-language instruction and extract which cube to pick up and which
+target zone to place it in.
+
+The cubes and the target zones use two DIFFERENT color vocabularies:
+- cube color must be one of: {", ".join(CUBE_COLORS)}
+- target zone color must be one of: {", ".join(ZONE_COLORS)}
 
 {LAYOUT_HINT}
-色名が直接書かれていない場合も、上記の配置情報から「一番右」「真ん中」などの
-位置表現を色に変換してください。
+If the instruction uses a spatial reference instead of a color name (e.g. "the rightmost
+block", "the middle zone"), resolve it to a color using the layout above.
 
-必ず次のJSON形式のみで回答してください（説明文や前置きは一切不要）:
-{{"object_color": "<red|green|blue>", "target_color": "<red|green|blue>"}}
+Respond with ONLY this JSON (no prose, no code fences):
+{{"object_color": "<{"|".join(CUBE_COLORS)}>", "target_color": "<{"|".join(ZONE_COLORS)}>"}}
 
-指示が不明瞭、または上記の色に当てはまらない場合は object_color か target_color に
-null を入れてください。"""
+If the instruction is ambiguous, or refers to a color outside the lists above, set the
+corresponding field to null."""
 
 
 class InstructionParseError(Exception):
@@ -63,7 +66,7 @@ def parse_instruction(instruction: str) -> dict:
     object_color = result.get("object_color")
     target_color = result.get("target_color")
 
-    if object_color not in VALID_COLORS or target_color not in VALID_COLORS:
+    if object_color not in CUBE_COLORS or target_color not in ZONE_COLORS:
         raise InstructionParseError(
             f"Instruction '{instruction}' resolved to invalid colors: {result!r}"
         )
