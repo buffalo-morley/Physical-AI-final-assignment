@@ -1,14 +1,14 @@
 """Deployment: runs a trained ACT policy in closed loop inside Genesis. Claude (via Bedrock)
 still parses the natural-language instruction into (object_color, target_color); from there,
 the learned policy -- not the scripted IK controller -- looks at the camera image(s) and
-proprioception and decides how to move the arm.
+proprioception and decides how to move the arm. The instruction text is burned into the
+video so successes and failures are both clearly labeled.
 
 Usage: run_act_demo.py --checkpoint outputs/act_policy_135_wrist.pt --wrist --video outputs/act_demo_135_wrist.mp4
 """
 
 import argparse
 import json
-import os
 
 import cv2
 import numpy as np
@@ -16,11 +16,14 @@ import torch
 import genesis as gs
 
 from src.act_model import ACTPolicy
+from src.config import CUBE_START_POS
 from src.demo_recorder import CHUNK_SIZE, IMG_SIZE, goal_vector
 from src.llm_instruction_parser import parse_instruction
-from src.pick_and_place_controller import go_ready, init_robot
+from src.pick_and_place_controller import go_ready, init_robot, pick, place
 from src.scene_builder import build_scene
+from src.video_recorder import CaptionedRecorder
 
+SIM_DT = 0.01
 FPS = 30
 DECISIONS_PER_EPISODE = 27  # ~= average chunk count per expert episode seen during collection
 IDLE_STEPS = 60
@@ -46,7 +49,7 @@ def get_image(cam):
     return cv2.resize(rgb, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
 
 
-def run_episode(policy, stats, device, franka, scene, top_cam, wrist_cam, object_color, target_color, use_wrist):
+def run_episode(policy, stats, device, franka, scene, top_cam, wrist_cam, object_color, target_color, use_wrist, recorder):
     goal = goal_vector(object_color, target_color)
     action_mean, action_std, proprio_mean, proprio_std = stats
 
@@ -69,6 +72,7 @@ def run_episode(policy, stats, device, franka, scene, top_cam, wrist_cam, object
         for a in action_chunk:
             franka.control_dofs_position(a, dofs_idx_local=ALL_DOFS)
             scene.step()
+            recorder.on_step()
 
 
 def main():
@@ -94,30 +98,48 @@ def main():
     with open("commands.json", encoding="utf-8") as f:
         commands = json.load(f)
 
-    os.makedirs("outputs", exist_ok=True)
-    cam.start_recording(save_to_filename=args.video, fps=FPS)
+    recorder = CaptionedRecorder(cam, dt=SIM_DT, fps=FPS)
 
+    recorder.set_caption("ACT policy (learned from 135 scripted demonstrations)")
     for _ in range(IDLE_STEPS):
-        scene.step()
+        recorder.on_step()
 
     for instruction in commands:
         print("instruction:", instruction)
         action = parse_instruction(instruction)
         print("  -> parsed action:", action)
+        recorder.set_caption(
+            f'Instruction: "{instruction}"  ->  {action["object_color"]} cube to {action["target_color"]} zone'
+        )
         run_episode(
             policy, stats, device, franka, scene, top_cam, wrist_cam,
-            action["object_color"], action["target_color"], args.wrist,
+            action["object_color"], action["target_color"], args.wrist, recorder,
         )
         # Every training episode ends with (and the next one begins right after) a scripted
         # go_ready() -- without repeating that here, the next episode would start from
         # whatever odd pose the policy's own (imperfect) rollout happened to stop at, which
         # the policy never saw during training.
+        go_ready(franka, scene, on_step=lambda a: recorder.on_step())
+
+        # The policy was only ever trained on scenes where every cube sits at its canonical
+        # start position and every zone is empty (collect_demos.py resets this way between
+        # every episode too). Without resetting here, the cube this episode just touched
+        # stays wherever the policy left it, so the very next episode starts from a visual
+        # scene the policy never saw during training -- compounding failures across episodes.
+        # This reset is not recorded into the video (jump-cut to the next instruction) so the
+        # scripted cleanup doesn't eat into the 1-3 minute budget the same way it does in
+        # main.py's "return everything to start" closing shot.
+        object_color = action["object_color"]
+        current_pos = cubes[object_color].get_pos().cpu().numpy()
+        pick(franka, scene, current_pos)
+        place(franka, scene, CUBE_START_POS[object_color], surface_half_height=0.0)
         go_ready(franka, scene)
 
+    recorder.set_caption("")
     for _ in range(IDLE_STEPS):
-        scene.step()
+        recorder.on_step()
 
-    cam.stop_recording()
+    recorder.save(args.video)
     print("Saved video to", args.video)
 
 

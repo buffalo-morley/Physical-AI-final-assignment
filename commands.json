@@ -1,5 +1,11 @@
 [
+  "Put the red cube in the yellow zone.",
+  "Move the leftmost cube to the middle zone.",
   "Put the red cube in the rightmost zone.",
-  "Move the middle cube to the yellow zone.",
-  "Put the blue cube on the purple pad."
+  "Move the middle cube to the leftmost zone.",
+  "Put the green cube on the purple pad.",
+  "Move the middle cube to the rightmost zone.",
+  "Put the blue cube in the yellow zone.",
+  "Move the rightmost cube to the middle zone.",
+  "Put the blue cube in the orange zone."
 ]
