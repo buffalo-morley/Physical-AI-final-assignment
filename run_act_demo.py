@@ -19,7 +19,7 @@ from src.act_model import ACTPolicy
 from src.config import CUBE_START_POS
 from src.demo_recorder import CHUNK_SIZE, IMG_SIZE, goal_vector
 from src.llm_instruction_parser import parse_instruction
-from src.pick_and_place_controller import go_ready, init_robot, pick, place
+from src.pick_and_place_controller import init_robot, teleport_reset
 from src.scene_builder import build_scene
 from src.video_recorder import CaptionedRecorder
 
@@ -104,36 +104,44 @@ def main():
     for _ in range(IDLE_STEPS):
         recorder.on_step()
 
+    results = []
     for instruction in commands:
         print("instruction:", instruction)
         action = parse_instruction(instruction)
         print("  -> parsed action:", action)
+        object_color, target_color = action["object_color"], action["target_color"]
         recorder.set_caption(
-            f'Instruction: "{instruction}"  ->  {action["object_color"]} cube to {action["target_color"]} zone'
+            f'Instruction: "{instruction}"  ->  {object_color} cube to {target_color} zone'
         )
+        start_pos = cubes[object_color].get_pos().cpu().numpy().copy()
+        zone_pos = zones[target_color].get_pos().cpu().numpy().copy()
+
         run_episode(
             policy, stats, device, franka, scene, top_cam, wrist_cam,
-            action["object_color"], action["target_color"], args.wrist, recorder,
+            object_color, target_color, args.wrist, recorder,
         )
-        # Every training episode ends with (and the next one begins right after) a scripted
-        # go_ready() -- without repeating that here, the next episode would start from
-        # whatever odd pose the policy's own (imperfect) rollout happened to stop at, which
-        # the policy never saw during training.
-        go_ready(franka, scene, on_step=lambda a: recorder.on_step())
 
-        # The policy was only ever trained on scenes where every cube sits at its canonical
-        # start position and every zone is empty (collect_demos.py resets this way between
-        # every episode too). Without resetting here, the cube this episode just touched
-        # stays wherever the policy left it, so the very next episode starts from a visual
-        # scene the policy never saw during training -- compounding failures across episodes.
-        # This reset is not recorded into the video (jump-cut to the next instruction) so the
-        # scripted cleanup doesn't eat into the 1-3 minute budget the same way it does in
-        # main.py's "return everything to start" closing shot.
-        object_color = action["object_color"]
-        current_pos = cubes[object_color].get_pos().cpu().numpy()
-        pick(franka, scene, current_pos)
-        place(franka, scene, CUBE_START_POS[object_color], surface_half_height=0.0)
-        go_ready(franka, scene)
+        # Log this episode's outcome -- measured right here, in the exact same scene/process
+        # that produced the submitted video.
+        end_pos = cubes[object_color].get_pos().cpu().numpy().copy()
+        moved_dist = np.linalg.norm(end_pos[:2] - start_pos[:2])
+        dist_to_zone = np.linalg.norm(end_pos[:2] - zone_pos[:2])
+        success = dist_to_zone < 0.06 and end_pos[2] > 0.025
+        results.append((object_color, target_color, moved_dist, dist_to_zone, end_pos[2], success))
+        print(
+            f"  [outcome] {object_color} -> {target_color}: moved {moved_dist*100:.1f}cm, "
+            f"{dist_to_zone*100:.1f}cm from zone center, final_z={end_pos[2]*100:.1f}cm SUCCESS={success}"
+        )
+
+        # Reset by directly teleporting the arm and every cube back to their canonical
+        # positions -- no IK here (IK is only for generating expert demonstrations in
+        # collect_demos.py). This is not recorded into the video (jump-cut to the next
+        # instruction), and resetting every cube (not just the one just used) rules out any
+        # incidental bump to the others during the policy's rollout carrying over unnoticed.
+        teleport_reset(franka, cubes, CUBE_START_POS)
+
+    n_success = sum(1 for r in results if r[-1])
+    print(f"[summary] {n_success}/{len(results)} succeeded (this run)")
 
     recorder.set_caption("")
     for _ in range(IDLE_STEPS):

@@ -54,6 +54,20 @@ def init_robot(franka):
     franka.control_dofs_position(READY_QPOS, dofs_idx_local=ALL_DOFS)
 
 
+def teleport_reset(franka, cubes, cube_start_pos):
+    """Directly teleports the arm to the ready pose and every cube back to its canonical
+    start position -- no IK, no simulated motion. IK (via pick()/place()) is only meant to
+    generate expert demonstrations in collect_demos.py; evaluating or deploying the ACT
+    policy should never rely on IK to clean up between trials, since that would itself be
+    another fallible physical action and could mask or mimic the policy's own errors. Also
+    zeroes every DOF's velocity so no residual motion carries into the next trial."""
+    init_robot(franka)
+    for color, pos in cube_start_pos.items():
+        cubes[color].set_pos(pos)
+        cubes[color].set_quat([1.0, 0.0, 0.0, 0.0])
+        cubes[color].zero_all_dofs_velocity()
+
+
 def _current_arm_qpos(franka):
     return franka.get_dofs_position(dofs_idx_local=ARM_DOFS).cpu().numpy()
 

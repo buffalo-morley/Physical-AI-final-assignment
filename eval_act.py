@@ -17,7 +17,7 @@ import genesis as gs
 from src.act_model import ACTPolicy
 from src.config import CUBE_COLORS, CUBE_START_POS, ZONE_COLORS
 from src.demo_recorder import CHUNK_SIZE, IMG_SIZE, goal_vector
-from src.pick_and_place_controller import go_ready, init_robot, pick, place
+from src.pick_and_place_controller import init_robot, teleport_reset
 from src.scene_builder import build_scene
 
 DECISIONS_PER_EPISODE = 27
@@ -96,13 +96,13 @@ def main():
             f"  SUCCESS={success}"
         )
 
-        # Reset for the next trial: put the cube back wherever it actually ended up picked up
-        # from isn't necessary -- just pick it up from its current position and place it back
-        # at its canonical start, via the known-reliable scripted controller.
-        current_pos = cubes[object_color].get_pos().cpu().numpy()
-        pick(franka, scene, current_pos)
-        place(franka, scene, CUBE_START_POS[object_color], surface_half_height=0.0)
-        go_ready(franka, scene)
+        # Reset for the next trial by directly teleporting the arm and every cube (not just
+        # the one just used) back to their canonical positions. No IK here: IK is only for
+        # generating expert demonstrations (collect_demos.py); using it to "clean up" between
+        # eval trials would be another fallible physical action, and resetting only the one
+        # cube that was just moved would let any incidental bump to the *other* cubes during
+        # the policy's rollout go undetected and carry over into later trials.
+        teleport_reset(franka, cubes, CUBE_START_POS)
 
     print(f"{label}: {n_success}/{len(pairs)} succeeded")
 
